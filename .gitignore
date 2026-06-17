@@ -1,0 +1,13 @@
+node_modules
+.output
+.tanstack
+.tmp
+dist
+coverage
+log
+*.log
+*.local
+.env
+.env.*
+!/.env.example
+symphony_workspaces
