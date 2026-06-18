@@ -53,9 +53,10 @@ export class GithubTracker implements IssueTracker {
       return []
     }
 
-    return this.fetchIssuesForStates(config.tracker.active_states, config, {
+    const issues = await this.fetchIssuesForStates(config.tracker.active_states, config, {
       filterRequiredLabels: true,
     })
+    return issues.filter((issue) => issue.assigned_to_worker)
   }
 
   async fetchIssuesByStates(states: Array<string>, config: EffectiveConfig): Promise<Array<Issue>> {
@@ -215,8 +216,9 @@ export class GithubTracker implements IssueTracker {
   }
 
   private async runGithub(args: Array<string>, config: EffectiveConfig): Promise<GithubCliResult> {
+    const command = githubCommandParts(config.tracker.gh_command)
     try {
-      return await this.executor(config.tracker.gh_command, args, {
+      return await this.executor(command.executable, [...command.args, ...args], {
         cwd: config.workflow_directory,
       })
     } catch (error) {
@@ -238,6 +240,58 @@ export class GithubTracker implements IssueTracker {
       throw new SymphonyError('github_cli_request', 'GitHub CLI request failed', { cause: error })
     }
   }
+}
+
+export function githubCommandParts(command: string): { executable: string; args: Array<string> } {
+  const parts: Array<string> = []
+  let current = ''
+  let quote: '"' | "'" | null = null
+  const input = command.trim()
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index]!
+    if (char === '\\') {
+      const next = input[index + 1]
+      if (next && (next === '"' || next === "'" || next === '\\' || /\s/.test(next))) {
+        current += next
+        index += 1
+      } else {
+        current += char
+      }
+      continue
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = null
+      } else {
+        current += char
+      }
+      continue
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char
+      continue
+    }
+
+    if (/\s/.test(char)) {
+      if (current) {
+        parts.push(current)
+        current = ''
+      }
+      continue
+    }
+
+    current += char
+  }
+
+  if (current) {
+    parts.push(current)
+  }
+
+  const [executable, ...args] = parts.length > 0 ? parts : ['gh']
+  return { executable, args }
 }
 
 async function defaultGithubCliExecutor(
@@ -262,7 +316,8 @@ function normalizeGithubIssue(
   config: EffectiveConfig,
   assigneeFilter: Set<string> | null,
 ): Issue | null {
-  if (!Number.isInteger(payload.number) || !payload.title || !payload.state) {
+  const issueNumber = payload.number
+  if (typeof issueNumber !== 'number' || !Number.isInteger(issueNumber) || !payload.title || !payload.state) {
     return null
   }
 
@@ -271,14 +326,14 @@ function normalizeGithubIssue(
   const state = normalizeGithubState(payload.state)
 
   return {
-    id: String(payload.number),
-    identifier: `GH-${payload.number}`,
+    id: String(issueNumber),
+    identifier: `GH-${issueNumber}`,
     title: payload.title,
     description: payload.body ?? null,
     priority: priorityFromLabels(labels),
     state,
     branch_name: null,
-    url: payload.url ?? issueUrlFromConfig(config, payload.number),
+    url: payload.url ?? issueUrlFromConfig(config, issueNumber),
     assignee_id: assignees[0] ?? null,
     assigned_to_worker: assignedToWorker(assignees, assigneeFilter),
     labels,
@@ -423,5 +478,5 @@ function truncateCliText(value: unknown): string {
 function isFailedGithubCliResult(
   error: unknown,
 ): error is Error & { code?: number | string; stdout?: string; stderr?: string } {
-  return Boolean(error) && typeof error === 'object' && ('stdout' in error || 'stderr' in error)
+  return error !== null && typeof error === 'object' && ('stdout' in error || 'stderr' in error)
 }

@@ -1,5 +1,13 @@
 {
   "include": ["**/*.ts", "**/*.tsx", "**/*.d.ts"],
+  "exclude": [
+    "node_modules",
+    ".output",
+    ".tmp",
+    "dist",
+    "log",
+    "symphony_workspaces"
+  ],
   "compilerOptions": {
     "strict": true,
     "esModuleInterop": true,

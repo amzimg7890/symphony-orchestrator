@@ -13,6 +13,7 @@ describe('Symphony CLI lifecycle', () => {
 
     expect(result).toEqual({ exit_code: 0, started: false, workflow_path: null, http_server: null })
     expect(calls.file_regular).toEqual([])
+    expect(calls.dotenv).toEqual([])
     expect(calls.starts).toEqual([])
     expect(calls.stdout.join('\n')).toContain('Usage: symphony')
   })
@@ -29,6 +30,7 @@ describe('Symphony CLI lifecycle', () => {
       http_server: null,
     })
     expect(calls.file_regular).toEqual([path.resolve('WORKFLOW.md')])
+    expect(calls.dotenv).toEqual([path.resolve('.env')])
     expect(calls.starts).toEqual([
       {
         workflow_path: path.resolve('WORKFLOW.md'),
@@ -55,6 +57,15 @@ describe('Symphony CLI lifecycle', () => {
     expect(calls.starts[0]?.workflow_path).toBe(resolvedWorkflowPath)
   })
 
+  it('loads a custom dotenv file before starting the service', async () => {
+    const { deps, calls } = cliDeps()
+
+    await runSymphonyCli(['--dotenv', 'config/local.env', 'WORKFLOW.md'], deps)
+
+    expect(calls.dotenv).toEqual([path.resolve('config/local.env')])
+    expect(calls.starts).toHaveLength(1)
+  })
+
   it('starts an HTTP listener with the configured runtime host when server.port is set', async () => {
     const { deps, calls } = cliDeps({
       start: async (workflowPath, options) => {
@@ -75,6 +86,21 @@ describe('Symphony CLI lifecycle', () => {
     })
     expect(calls.http_starts).toEqual([{ port: 0, host: '0.0.0.0' }])
     expect(calls.stdout).toContain('HTTP: http://127.0.0.1:49152')
+  })
+
+  it('returns bounded daemon runtime metadata when --run-for-ms is set', async () => {
+    const { deps, calls } = cliDeps()
+
+    const result = await runSymphonyCli(['WORKFLOW.github.md', '--run-for-ms', '120000'], deps)
+
+    expect(result).toMatchObject({
+      exit_code: 0,
+      started: true,
+      workflow_path: path.resolve('WORKFLOW.github.md'),
+      run_duration_ms: 120000,
+    })
+    expect(calls.stdout).toContain('Stopping automatically after 120000ms.')
+    expect(calls.stdout).not.toContain('Press Ctrl+C to stop.')
   })
 
   it('stops the service when the HTTP listener fails to bind', async () => {
@@ -116,6 +142,7 @@ describe('Symphony CLI lifecycle', () => {
       http_server: null,
     })
     expect(calls.starts).toEqual([])
+    expect(calls.dotenv).toEqual([])
     expect(calls.stderr).toEqual([`Workflow file not found: ${path.resolve('missing/WORKFLOW.md')}`])
   })
 
@@ -146,6 +173,7 @@ describe('Symphony CLI lifecycle', () => {
 
     expect(result).toEqual({ exit_code: 1, started: false, workflow_path: null, http_server: null })
     expect(calls.file_regular).toEqual([])
+    expect(calls.dotenv).toEqual([])
     expect(calls.starts).toEqual([])
     expect(calls.stderr[0]).toBe('Unknown option: --wat')
     expect(calls.stderr[1]).toContain('Usage: symphony')
@@ -156,6 +184,7 @@ function cliDeps(overrides: Partial<SymphonyCliDeps> = {}): {
   deps: SymphonyCliDeps
   calls: {
     file_regular: Array<string>
+    dotenv: Array<string>
     starts: Array<{ workflow_path: string; options: SymphonyStartOptions }>
     stdout: Array<string>
     stderr: Array<string>
@@ -165,6 +194,7 @@ function cliDeps(overrides: Partial<SymphonyCliDeps> = {}): {
 } {
   const calls = {
     file_regular: [] as Array<string>,
+    dotenv: [] as Array<string>,
     starts: [] as Array<{ workflow_path: string; options: SymphonyStartOptions }>,
     stdout: [] as Array<string>,
     stderr: [] as Array<string>,
@@ -176,6 +206,9 @@ function cliDeps(overrides: Partial<SymphonyCliDeps> = {}): {
     fileRegular: async (filePath) => {
       calls.file_regular.push(filePath)
       return true
+    },
+    loadDotEnv: async (filePath) => {
+      calls.dotenv.push(filePath)
     },
     start: async (workflowPath, options) => {
       calls.starts.push({ workflow_path: workflowPath, options })

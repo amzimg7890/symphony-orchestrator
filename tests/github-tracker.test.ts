@@ -2,10 +2,22 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { resolveWorkflowConfig } from '../src/server/symphony/config'
 import { SymphonyError } from '../src/server/symphony/errors'
-import { GithubTracker, type GithubCliExecutor } from '../src/server/symphony/githubTracker'
+import { GithubTracker, githubCommandParts, type GithubCliExecutor } from '../src/server/symphony/githubTracker'
 import { parseWorkflow } from '../src/server/symphony/workflow'
 
 describe('GitHub tracker adapter', () => {
+  it('splits gh wrapper commands while preserving Windows paths', () => {
+    expect(githubCommandParts('gh')).toEqual({ executable: 'gh', args: [] })
+    expect(githubCommandParts('node ./tools/fake-gh.mjs')).toEqual({
+      executable: 'node',
+      args: ['./tools/fake-gh.mjs'],
+    })
+    expect(githubCommandParts('"C:\\Program Files\\GitHub CLI\\gh.exe"')).toEqual({
+      executable: 'C:\\Program Files\\GitHub CLI\\gh.exe',
+      args: [],
+    })
+  })
+
   it('fetches open GitHub issues through gh with required labels', async () => {
     const config = resolveConfig([])
     const calls: Array<{ command: string; args: Array<string>; cwd?: string }> = []
@@ -109,6 +121,43 @@ describe('GitHub tracker adapter', () => {
       'openai/symphony',
       '--json',
       'number,title,body,state,url,labels,assignees,createdAt,updatedAt',
+    ])
+  })
+
+  it('filters candidate issues to the configured GitHub assignee', async () => {
+    const config = resolveConfig(['  assignee: me'])
+    const calls: Array<Array<string>> = []
+    const tracker = new GithubTracker(async (_command, args) => {
+      calls.push(args)
+      if (args[0] === 'api') {
+        return { stdout: 'amzimg\n', stderr: '' }
+      }
+      return {
+        stdout: JSON.stringify([
+          githubIssue({ number: 8, assignees: ['someone-else'] }),
+          githubIssue({ number: 9, assignees: ['amzimg'] }),
+        ]),
+        stderr: '',
+      }
+    })
+
+    const issues = await tracker.fetchCandidateIssues(config)
+
+    expect(issues.map((issue) => issue.identifier)).toEqual(['GH-9'])
+    expect(calls[0]).toEqual(['api', 'user', '--jq', '.login'])
+    expect(calls[1]).toEqual([
+      'issue',
+      'list',
+      '--repo',
+      'openai/symphony',
+      '--state',
+      'open',
+      '--limit',
+      '1000',
+      '--json',
+      'number,title,body,state,url,labels,assignees,createdAt,updatedAt',
+      '--label',
+      'codex',
     ])
   })
 

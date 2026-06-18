@@ -15,7 +15,8 @@ polling:
 workspace:
   root: ./symphony_workspaces
 hooks:
-  timeout_ms: 60000
+  before_run: npm --prefix ../.. run workspace:ensure-github --
+  timeout_ms: 600000
 agent:
   runner: codex
   max_concurrent_agents: 1
@@ -23,8 +24,11 @@ agent:
   max_retry_backoff_ms: 60000
 codex:
   command: codex app-server
+  approval_policy: never
+  turn_sandbox_policy:
+    type: dangerFullAccess
   turn_timeout_ms: 3600000
-  read_timeout_ms: 5000
+  read_timeout_ms: 60000
   stall_timeout_ms: 300000
 logging:
   enabled: true
@@ -44,6 +48,9 @@ You are working on {{ issue.identifier }}: {{ issue.title }}.
 GitHub URL: {{ issue.url | default: "not available" }}
 State: {{ issue.state }}
 Labels: {% for label in issue.labels %}{{ label }}{% unless forloop.last %}, {% endunless %}{% endfor %}
+
+Body:
+{{ issue.description | default: "No issue body provided." }}
 
 Use the local GitHub CLI when you need to update the issue:
 

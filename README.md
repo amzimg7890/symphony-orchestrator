@@ -39,6 +39,9 @@ When `--port` or `server.port` is set, the CLI binds an HTTP listener and prints
 its URL. The default `server.host` is `127.0.0.1`; set `server.host` explicitly
 when you need another bind host. `--port 0` requests an ephemeral port while
 preserving `0` in runtime snapshots, matching the upstream override semantics.
+Use `--run-for-ms <milliseconds>` when you want a bounded daemon window for a
+local smoke or GitHub Actions run. The CLI loads `.env` from the current working
+directory before startup; use `--dotenv <path>` to choose another file.
 The TanStack dev and production servers expose the same dashboard/API routes for
 app-style use.
 
@@ -50,6 +53,8 @@ npm test
 npm run build
 npm run smoke:dev
 npm run smoke:cli-http
+npm run smoke:cli-bounded
+npm run smoke:github-cli-runtime
 npm run smoke:orchestrator-soak
 npm run smoke:restart-recovery
 npm run smoke:codex-schema
@@ -62,8 +67,11 @@ npm run acceptance:status
 npm run status:dashboard -- --snapshot path/to/snapshot.json --no-color
 npm run workflow:live
 npm run workflow:check-live
+npm run workflow:prepare-github-issue
+npm run workflow:check-github
 npm run workflow:smoke-live-readonly
 npm run pr-body:check -- --file path/to/pr_body.md
+npm run workspace:ensure-github -- --repo owner/repo --workspace path/to/workspace
 npm run workspace:before-remove -- --branch feature/my-branch --repo owner/repo
 npm run specs:check
 ```
@@ -76,6 +84,16 @@ service down.
 `smoke:cli-http` starts the daemon-style CLI with `--port 0`, reads the printed
 loopback URL, verifies `/api/v1/` and `/api/v1/state`, and then shuts the CLI
 down.
+
+`smoke:cli-bounded` starts the daemon-style CLI with a temporary memory workflow
+and `--run-for-ms`, then verifies the process exits by itself without external
+signals.
+
+`smoke:github-cli-runtime` starts the daemon-style CLI with a temporary
+`tracker.kind: github` workflow and a fake local `gh` command. It verifies the
+runtime lists a GitHub-style candidate issue, dispatches the simulated worker,
+refreshes the issue through `gh issue view`, and records terminal cleanup logs
+without touching a real GitHub repository.
 
 `smoke:orchestrator-soak` runs an in-process Linear-like tracker and custom
 runner through a longer local scenario covering concurrent dispatch, retry,
@@ -160,6 +178,20 @@ runtime config parser, verifies it is configured for real Linear plus the Codex
 runner, and queries Linear for active/eligible/terminal issue counts. It does
 not create issues, write comments, update states, or start Codex.
 
+`workflow:check-github` is the matching read-only check for
+`tracker.kind: github`. It loads `WORKFLOW.github.md` by default, verifies the
+workflow uses the local `gh` CLI with a Codex runner, checks `gh auth status`,
+reads open/closed GitHub issue counts through `gh issue list`, applies any
+configured `assignee` routing to the eligible-candidate count, and exits without
+commenting, closing issues, or starting Codex.
+
+`workflow:prepare-github-issue` prepares a GitHub issue for the local-gh
+workflow. By default it is read-only: it loads `.env` and `WORKFLOW.github.md`,
+checks `gh auth status`, lists repository labels, counts eligible candidates,
+and prints the `gh issue create` command that would make a matching issue. Add
+`--create` to create the issue, and `--create-labels` when the required labels
+should be created first.
+
 `workflow:smoke-live-readonly` starts the production orchestrator with the
 generated live workflow and a guarded runner. It lets the runtime perform one
 real Linear candidate poll, but returns no issues to the dispatcher so Codex is
@@ -170,6 +202,11 @@ runtime wiring before running the destructive `smoke:live-e2e` gate.
 markdown file against `.github/pull_request_template.md`, requiring the same
 headings in order, non-empty sections, no placeholder comments, and bullet or
 checkbox content where the template requires it.
+
+`workspace:ensure-github` prepares local GitHub issue workspaces for the Codex
+runner. It clones `GITHUB_REPOSITORY` or `--repo OWNER/REPO` into an empty
+workspace, skips workspaces that already contain `.git`, and refuses to clone
+into a non-empty non-git directory so existing files are not overwritten.
 
 `workspace:before-remove` mirrors the upstream workspace cleanup helper. It is a
 best-effort command for `hooks.before_remove`: it discovers the current Git
@@ -212,6 +249,81 @@ tracker:
 Memory tracker issues are kept in process memory. `createComment` records local
 comments and `updateIssueState` updates the in-memory issue state, which makes
 it useful for exercising orchestration behavior without network access.
+
+For local GitHub Issues automation, use `tracker.kind: github`. This path uses
+the local `gh` CLI and its existing authentication; it does not require a GitHub
+token in `WORKFLOW.md`. Set `tracker.repo` or `GITHUB_REPOSITORY` to
+`owner/repo` (or `host/owner/repo` for GitHub Enterprise). When `tracker.repo`
+is omitted, `gh` uses the current repository context. Open GitHub issues are
+treated as active and closed issues as terminal by default; `Todo`/`In Progress`
+and `Done` aliases are also mapped to open/closed for teams that want to keep
+Symphony-style state names.
+
+For a step-by-step local development workflow, see
+[`docs/local-github-gh.md`](docs/local-github-gh.md).
+
+```yaml
+tracker:
+  kind: github
+  repo: owner/repo
+  gh_command: gh
+  assignee: me
+  required_labels: [codex]
+  active_states: [Open]
+  terminal_states: [Closed]
+demo:
+  mock_tracker: false
+agent:
+  runner: codex
+codex:
+  command: codex app-server
+  approval_policy: never
+  turn_sandbox_policy:
+    type: dangerFullAccess
+workspace:
+  root: ./symphony_workspaces
+hooks:
+  before_run: npm --prefix ../.. run workspace:ensure-github --
+  timeout_ms: 600000
+```
+
+Create or label a GitHub issue with `codex`, then run:
+
+```bash
+npm run workflow:prepare-github-issue -- --workflow ./WORKFLOW.github.md
+npm run workflow:check-github -- --workflow ./WORKFLOW.github.md
+npm run cli -- ./WORKFLOW.github.md --port 3001
+npm run cli -- ./WORKFLOW.github.md --run-for-ms 1800000
+```
+
+To let the helper create the matching issue explicitly:
+
+```bash
+npm run workflow:prepare-github-issue -- --workflow ./WORKFLOW.github.md --create --create-labels
+```
+
+The checked-in GitHub workflow uses a `before_run` hook to call
+`workspace:ensure-github` from each issue workspace. That hook makes the
+workspace a checkout of `GITHUB_REPOSITORY` before Codex starts, then future
+attempts reuse the same checkout. The workflow prompt includes the GitHub issue
+body, so the issue body should contain the concrete task for the worker. The
+service polls with `gh issue list`,
+refreshes running claims with `gh issue view`, comments through
+`gh issue comment`, and maps completed states to `gh issue close` or active
+states to `gh issue reopen`. When `assignee: me` is configured, Symphony
+resolves the current GitHub login through `gh api user` and only dispatches
+matching open issues. GitHub Actions are optional: they are useful with a
+self-hosted runner or CI wrapper, but the local daemon already knows how to pull
+eligible issues automatically through `gh`. The checked-in GitHub workflow sets
+`codex.approval_policy: never` and `codex.turn_sandbox_policy.type:
+dangerFullAccess` so a bounded local or Actions worker can run `gh issue
+comment` and `gh issue close` without waiting for an interactive approval prompt
+or Windows command-sandbox process creation.
+The repository also includes `.github/workflows/symphony-github-issues.yml` as a
+manual Actions entrypoint. Its default `check-only` mode runs the read-only
+GitHub workflow check; `run-worker` starts the polling worker for a bounded time
+window with `--run-for-ms` and requires `codex app-server` to be installed on
+the runner.
 
 A real workflow can use the cleanup helper from `before_remove` when workspaces
 are Git checkouts with GitHub CLI available:

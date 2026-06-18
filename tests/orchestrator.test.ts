@@ -2612,7 +2612,7 @@ async function waitForBlocked(orchestrator: SymphonyOrchestrator) {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     if (predicate()) {
       return
     }

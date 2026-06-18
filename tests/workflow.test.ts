@@ -948,6 +948,38 @@ describe('workflow parsing and config resolution', () => {
     expect(result.config.demo.mock_tracker).toBe(false)
   })
 
+  it('rejects invalid GitHub repository names before gh is invoked', () => {
+    const workflow = parseWorkflow(
+      [
+        '---',
+        'tracker:',
+        '  kind: github',
+        '  repo: $GITHUB_REPOSITORY',
+        'agent:',
+        '  runner: codex',
+        'demo:',
+        '  mock_tracker: false',
+        '---',
+        'Prompt',
+      ].join('\n'),
+      path.resolve('WORKFLOW.md'),
+    )
+
+    const result = resolveWorkflowConfig(workflow, {
+      GITHUB_REPOSITORY: 'fresh_food_butler',
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'invalid_config',
+          message: 'tracker.repo must use OWNER/REPO or HOST/OWNER/REPO format for tracker.kind=github',
+        }),
+      ]),
+    )
+  })
+
   it('supports memory tracker issues without Linear credentials', () => {
     const workflow = parseWorkflow(
       [

@@ -123,6 +123,13 @@ export function resolveWorkflowConfig(
     })
   }
 
+  if (trackerKind === 'github' && repository && !validGithubRepository(repository)) {
+    errors.push({
+      code: 'invalid_config',
+      message: 'tracker.repo must use OWNER/REPO or HOST/OWNER/REPO format for tracker.kind=github',
+    })
+  }
+
   if (runner !== 'simulated' && runner !== 'codex') {
     errors.push({
       code: 'invalid_config',
@@ -477,6 +484,10 @@ function resolveEnvValue(value: string, env: NodeJS.ProcessEnv): string {
   }
 
   return value.replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, key: string) => env[key] ?? '')
+}
+
+function validGithubRepository(repository: string): boolean {
+  return /^(?:[A-Za-z0-9.-]+\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)
 }
 
 function resolveSecretValue(

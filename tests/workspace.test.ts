@@ -281,6 +281,8 @@ function configFixture(
       endpoint: 'https://api.linear.app/graphql',
       api_key: 'token',
       project_slug: 'demo',
+      repository: null,
+      gh_command: 'gh',
       assignee: null,
       required_labels: [],
       active_states: ['Todo'],

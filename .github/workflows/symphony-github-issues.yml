@@ -1,0 +1,68 @@
+name: Symphony GitHub Issues
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: What to run.
+        required: true
+        default: check-only
+        type: choice
+        options:
+          - check-only
+          - run-worker
+      worker_window_minutes:
+        description: Maximum worker window for run-worker mode.
+        required: true
+        default: '30'
+        type: choice
+        options:
+          - '5'
+          - '15'
+          - '30'
+          - '60'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: symphony-github-issues-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  symphony:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_ASSIGNEE: ${{ github.actor }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check GitHub workflow
+        run: npm run workflow:check-github -- --workflow ./WORKFLOW.github.md
+
+      - name: Run Symphony worker
+        if: ${{ inputs.mode == 'run-worker' }}
+        timeout-minutes: ${{ fromJSON(inputs.worker_window_minutes) }}
+        run: |
+          if ! command -v codex >/dev/null 2>&1; then
+            echo "::error::codex app-server is not installed on this runner."
+            exit 1
+          fi
+
+          npm run cli -- ./WORKFLOW.github.md --run-for-ms "$(( ${{ inputs.worker_window_minutes }} * 60000 ))"

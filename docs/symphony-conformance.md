@@ -64,6 +64,13 @@ implementation.
 - CLI lifecycle handling expands workflow paths, checks that the selected
   workflow file exists before startup, prints usage for invalid arguments, and
   returns clean startup errors.
+- CLI `--run-for-ms` starts the daemon with the normal runtime path and then
+  exits cleanly after the configured bounded window, which gives local GitHub
+  Issues automation and manual GitHub Actions runs a portable lifecycle control.
+- The daemon CLI loads `.env` from the current working directory before runtime
+  startup, and `--dotenv` can select another file, so local runs use the same
+  environment-backed workflow config as the read-only GitHub/Linear check
+  scripts.
 - Omitted, blank, or missing-env-backed `workspace.root` resolves to the
   reference default under the host temp directory,
   `<tmp>/symphony_workspaces`, normalized through the host platform's path
@@ -87,6 +94,14 @@ implementation.
   state-list, and id refresh calls without Linear credentials, filters
   candidates through configured active states, records local comments, and
   updates in-memory issue state.
+- `tracker.kind: github` provides a local GitHub Issues tracker backed by the
+  `gh` CLI. It uses `tracker.repo`/`GITHUB_REPOSITORY` when configured or lets
+  `gh` infer the current repository, validates configured repositories as
+  `OWNER/REPO` or `HOST/OWNER/REPO`, polls open issues by label, maps
+  `Open`/`Closed` plus `Todo`/`In Progress`/`Done` aliases onto GitHub issue
+  state, filters candidate issues through `assignee: me` via `gh api user`,
+  creates comments with `gh issue comment`, and closes/reopens issues through
+  `gh issue close` / `gh issue reopen`.
 - Linear non-200 responses and top-level GraphQL errors surface structured,
   truncated details so operators and the `linear_graphql` tool can inspect
   schema/variable failures without logging unbounded response bodies.
@@ -147,6 +162,9 @@ implementation.
   completed bookkeeping before re-dispatch.
 - Workspace manager creates deterministic per-issue directories, preserves reused
   workspaces, runs hooks, and prevents paths from escaping the configured root.
+- The `workspace:ensure-github` helper prepares local GitHub issue workspaces by
+  cloning the configured repository into empty workspaces, skipping existing git
+  checkouts, and refusing non-empty non-git directories before Codex launches.
 - Workspace paths are canonicalized through existing symlinks before use:
   symlinked workspace roots resolve to their real location, workspaces that
   symlink outside the configured root are rejected, and stale non-directory
@@ -325,6 +343,10 @@ implementation.
 - The repository includes a Node/TanStack-side `workspace:before-remove` helper
   mirroring the upstream `workspace.before_remove` hook utility for best-effort
   GitHub PR closure before terminal workspace cleanup.
+- The repository includes a companion `workspace:ensure-github` helper for
+  local GitHub issue runners. It uses the same local `gh` auth as the tracker,
+  prepares an empty issue workspace with `gh repo clone <repo> .`, and is wired
+  into `WORKFLOW.github.md` as a `before_run` hook.
 - The repository includes a TypeScript `specs:check` gate mirroring the intent
   of upstream `specs.check` by requiring explicit return types on exported
   Symphony server functions.
@@ -338,6 +360,24 @@ implementation.
 - The repository includes a `workflow:check-live` read-only gate that loads the
   generated live workflow, verifies it is configured for real Linear plus Codex,
   and queries Linear candidate counts without mutating issues or invoking Codex.
+- The repository includes a `workflow:check-github` read-only gate that loads a
+  GitHub workflow, verifies it is configured for `tracker.kind: github` plus
+  Codex, checks local `gh` authentication, and queries GitHub candidate counts
+  without commenting, closing issues, or invoking Codex.
+- The repository includes a guarded `workflow:prepare-github-issue` helper. Its
+  default dry-run mode checks GitHub auth, repository labels, and existing
+  eligible candidates without mutating GitHub; explicit `--create` and
+  `--create-labels` flags are required to create a candidate issue or missing
+  labels.
+- The repository includes a manual GitHub Actions entrypoint for GitHub Issues
+  automation. Its default mode runs the read-only GitHub workflow check, while
+  the explicit worker mode runs the polling worker through the CLI's bounded
+  `--run-for-ms` lifecycle and requires `codex app-server` to be installed on
+  the runner.
+- The repository includes a no-network GitHub CLI runtime smoke that runs the
+  daemon CLI against a fake `gh` executable, proving the GitHub tracker can list
+  a candidate issue, dispatch a worker, refresh issue state, and record terminal
+  cleanup through the production CLI path without mutating GitHub.
 - The repository includes a `workflow:smoke-live-readonly` runtime gate that
   starts the orchestrator with the generated live workflow, performs one real
   Linear candidate poll, and guards against any Codex runner dispatch.
@@ -361,6 +401,8 @@ implementation.
 - `npm run smoke:dev`
 - `npm run smoke:prod-server`
 - `npm run smoke:cli-http`
+- `npm run smoke:cli-bounded`
+- `npm run smoke:github-cli-runtime`
 - `npm run smoke:orchestrator-soak`
 - `npm run smoke:restart-recovery`
 - `npm run smoke:codex-schema`
@@ -380,6 +422,17 @@ implementation.
   Linear/Codex run without contacting external services or embedding secrets.
 - `npm run workflow:check-live` reads the generated live workflow and checks
   real Linear candidate counts without starting the runner or mutating Linear.
+- `npm run workflow:prepare-github-issue` reads `WORKFLOW.github.md`, checks
+  GitHub labels and existing candidates, and prints a candidate creation
+  command without mutating GitHub unless `--create` is supplied.
+- `npm run workflow:check-github` reads `WORKFLOW.github.md` by default and
+  checks local `gh` access plus GitHub candidate counts without starting the
+  runner or mutating GitHub issues.
+- `npm run cli -- WORKFLOW.github.md --run-for-ms 1800000` starts a bounded
+  daemon window, which is useful for local GitHub Issues automation and manual
+  GitHub Actions worker runs.
+- `npm run workspace:ensure-github` prepares a local GitHub issue workspace by
+  cloning the configured repository only when the workspace is empty.
 - `npm run workflow:smoke-live-readonly` starts the orchestrator against the
   generated live workflow for one guarded read-only Linear poll.
 - `npm run smoke:ssh-worker-preflight` is available for read-only/no-model SSH
@@ -438,6 +491,16 @@ implementation.
   - verifies form-url-encoded `/api/v1/refresh` and upstream-style
     method-not-allowed JSON through the CLI listener
   - sends SIGINT and shuts the CLI process down
+- CLI bounded smoke:
+  - starts the daemon-style CLI with a temporary memory tracker workflow and
+    `--run-for-ms`
+  - verifies the process exits without an external signal
+- GitHub CLI runtime smoke:
+  - starts the daemon-style CLI with a temporary `tracker.kind: github`
+    workflow and fake `gh_command`
+  - verifies `gh api user`, `gh issue list`, and `gh issue view` are invoked
+  - verifies a GitHub-style issue dispatches through the simulated worker and
+    records terminal cleanup plus worker completion in structured logs
 - Orchestrator soak smoke:
   - runs a custom in-process Linear-like tracker and agent runner
   - proves two issues can dispatch concurrently under the configured limit
@@ -448,11 +511,15 @@ implementation.
   - proves stalled sessions are detected and queued for retry with `Stalled`
     retry detail
 - CLI/config tests:
-  - CLI arguments parse workflow paths plus `--logs-root` and `--port`
+  - CLI arguments parse workflow paths plus `--logs-root`, `--port`, and
+    `--run-for-ms`
     overrides
   - `--port 0` is accepted as the upstream ephemeral-port override
+  - invalid `--run-for-ms` values are rejected before startup
   - CLI starts the HTTP listener when runtime config has `server.port`, and
     stops the orchestrator if the listener fails to bind
+  - CLI startup output reports the automatic stop window when `--run-for-ms` is
+    configured
   - blank `--logs-root` values are rejected instead of resolving to a whitespace
     directory
   - CLI lifecycle covers help output, default workflow selection, explicit path
@@ -571,6 +638,36 @@ implementation.
   - successful malformed JSON, malformed candidate payloads, and malformed
     issue-state payloads surface `linear_unknown_payload` with bounded body
     details when available
+- GitHub tracker tests:
+  - candidate issue fetch uses `gh issue list` with repo, state, JSON fields,
+    and required labels
+  - `Todo`/`In Progress` and `Done` aliases map to GitHub open/closed state
+    operations
+  - `tracker.assignee: me` resolves through `gh api user` and marks refreshed
+    issues as assigned or not assigned to this worker
+  - candidate issue fetch filters out issues assigned to other GitHub users
+  - comments use `gh issue comment`, state updates use `gh issue close` /
+    `gh issue reopen`, and failed `gh` commands surface typed
+    `github_cli_status` errors
+- GitHub workflow check tests:
+  - reject non-GitHub workflows before invoking `gh`
+  - use a fake local `gh` executable to verify read-only auth, issue listing,
+    candidate counts, terminal counts, and next-command output
+- GitHub issue preparation tests:
+  - default to a read-only dry run that reports missing labels and prints the
+    candidate `gh issue create` command without creating an issue
+  - require explicit create flags before invoking `gh label create` and
+    `gh issue create`
+- GitHub workflow prompt:
+  - includes the GitHub issue body so local-gh workers receive the actual task
+    instructions instead of only the issue title and labels
+  - sets `codex.approval_policy: never` and a `dangerFullAccess` turn sandbox
+    so local or Actions workers can complete `gh issue comment`/`gh issue
+    close` handoff steps unattended
+- GitHub workspace preparation tests:
+  - parse repository, workspace, and GitHub command defaults from environment
+  - clone into empty workspaces through a fake `gh repo clone`
+  - skip existing git checkouts and reject non-empty non-git directories
 - Dev-server workflow reload smoke with a temporary workflow:
   - invalid reload surfaced `config_errors` in `/api/v1/state`
   - valid reload cleared `config_errors`
@@ -810,6 +907,15 @@ implementation.
   - rejects demo/mock or non-Codex workflows before network access
   - reads active, eligible candidate, and terminal issue counts from Linear
     without creating comments, updating issue state, or starting Codex
+- GitHub workflow read-only check:
+  - loads `.env` and `WORKFLOW.github.md` by default
+  - rejects non-GitHub, mock, or non-Codex workflows before invoking `gh`
+  - checks local `gh auth status` and reads active, eligible candidate, and
+    terminal issue counts without mutating GitHub or starting Codex
+- GitHub workspace preparation helper:
+  - `WORKFLOW.github.md` calls `workspace:ensure-github` from `before_run`
+  - a real local verification cloned `amzimg7890/fresh_food_butler` into the
+    `GH-27` issue workspace through `gh repo clone`
 - Live workflow read-only runtime smoke:
   - starts `SymphonyOrchestrator` with the generated live workflow and a guard
     runner

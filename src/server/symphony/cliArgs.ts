@@ -3,7 +3,9 @@ import type { SymphonyStartOptions } from './orchestrator'
 export type ParsedSymphonyCliArgs = {
   help: boolean
   workflow_path: string
+  dotenv_path: string
   start_options: SymphonyStartOptions
+  run_duration_ms?: number
 }
 
 export function parseSymphonyCliArgs(
@@ -11,8 +13,10 @@ export function parseSymphonyCliArgs(
   defaultWorkflowPath: string,
 ): ParsedSymphonyCliArgs {
   let workflowPath: string | null = null
+  let dotenvPath = '.env'
   let logsRoot: string | undefined
   let serverPort: number | null | undefined
+  let runDurationMs: number | undefined
   let help = false
 
   for (let index = 0; index < args.length; index += 1) {
@@ -35,12 +39,33 @@ export function parseSymphonyCliArgs(
       continue
     }
 
+    if (arg === '--dotenv' || arg.startsWith('--dotenv=')) {
+      const value = valueForOption(args, index, '--dotenv').trim()
+      if (!value) {
+        throw new Error('--dotenv requires a value')
+      }
+      if (arg === '--dotenv') {
+        index += 1
+      }
+      dotenvPath = value
+      continue
+    }
+
     if (arg === '--port' || arg.startsWith('--port=')) {
       const value = valueForOption(args, index, '--port')
       if (arg === '--port') {
         index += 1
       }
       serverPort = parsePort(value)
+      continue
+    }
+
+    if (arg === '--run-for-ms' || arg.startsWith('--run-for-ms=')) {
+      const value = valueForOption(args, index, '--run-for-ms')
+      if (arg === '--run-for-ms') {
+        index += 1
+      }
+      runDurationMs = parsePositiveInteger(value, '--run-for-ms')
       continue
     }
 
@@ -57,12 +82,14 @@ export function parseSymphonyCliArgs(
   return {
     help,
     workflow_path: workflowPath ?? defaultWorkflowPath,
+    dotenv_path: dotenvPath,
     start_options: {
       config_overrides: {
         ...(logsRoot === undefined ? {} : { logging_root: logsRoot }),
         ...(serverPort === undefined ? {} : { server_port: serverPort }),
       },
     },
+    ...(runDurationMs === undefined ? {} : { run_duration_ms: runDurationMs }),
   }
 }
 
@@ -71,8 +98,10 @@ export function symphonyCliUsage(): string {
     'Usage: symphony [WORKFLOW.md] [--logs-root PATH] [--port PORT]',
     '',
     'Options:',
+    '  --dotenv PATH    Load environment variables from PATH before startup (default: .env).',
     '  --logs-root PATH  Override logging.root for this process.',
     '  --port PORT       Override server.port in runtime snapshots.',
+    '  --run-for-ms MS   Stop the daemon automatically after this many milliseconds.',
     '  -h, --help        Show this help.',
   ].join('\n')
 }
@@ -103,4 +132,13 @@ function parsePort(value: string): number {
   }
 
   throw new Error('--port must be an integer between 0 and 65535')
+}
+
+function parsePositiveInteger(value: string, option: string): number {
+  const parsed = Number(value)
+  if (Number.isInteger(parsed) && parsed > 0) {
+    return parsed
+  }
+
+  throw new Error(`${option} must be a positive integer`)
 }
