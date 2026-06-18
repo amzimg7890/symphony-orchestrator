@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -25,6 +25,8 @@ describe('workspace ensure-github helper', () => {
         GITHUB_REPOSITORY: 'owner/repo',
         SYMPHONY_WORKSPACE_PATH: '/tmp/workspace',
         SYMPHONY_GH_COMMAND: 'gh-wrapper gh',
+        SYMPHONY_WORKSPACE_ENV_FILE: '/tmp/secrets/repo.env',
+        SYMPHONY_WORKSPACE_ENV_TARGET: '.env',
       }),
     ).toEqual({
       ok: true,
@@ -32,6 +34,8 @@ describe('workspace ensure-github helper', () => {
       repo: 'owner/repo',
       workspace: '/tmp/workspace',
       ghCommand: 'gh-wrapper gh',
+      envFile: '/tmp/secrets/repo.env',
+      envTarget: '.env',
     })
   })
 
@@ -69,6 +73,32 @@ describe('workspace ensure-github helper', () => {
     expect(calls.stdout).toEqual([`Cloned owner/repo into ${path.resolve(workspace)}`])
   })
 
+  it('injects a configured env file into the workspace after cloning', async () => {
+    const workspace = await tempWorkspace('symphony-ensure-github-env-clone-')
+    const envFile = path.join(await tempWorkspace('symphony-ensure-github-env-source-'), 'repo.env')
+    await writeFile(envFile, 'APP_SECRET=local-only\n', 'utf8')
+    const { deps, calls } = fakeDeps({
+      commands: {
+        'gh repo clone owner/repo .': async ({ cwd }) => {
+          await mkdir(path.join(cwd, '.git'))
+          return { ok: true, output: '' }
+        },
+      },
+    })
+
+    await expect(
+      ensureGithubWorkspace({ repo: 'owner/repo', workspace, envFile, envTarget: '.env.local' }, deps),
+    ).resolves.toMatchObject({
+      action: 'cloned',
+    })
+
+    await expect(readFile(path.join(workspace, '.env.local'), 'utf8')).resolves.toBe('APP_SECRET=local-only\n')
+    expect(calls.stdout).toEqual([
+      'Injected workspace env file: .env.local',
+      `Cloned owner/repo into ${path.resolve(workspace)}`,
+    ])
+  })
+
   it('skips a workspace that already has a git checkout', async () => {
     const workspace = await tempWorkspace('symphony-ensure-github-skip-')
     await mkdir(path.join(workspace, '.git'))
@@ -79,6 +109,40 @@ describe('workspace ensure-github helper', () => {
     })
     expect(calls.commands).toEqual([])
     expect(calls.stdout).toEqual([`Workspace already contains a git checkout: ${path.resolve(workspace)}`])
+  })
+
+  it('refreshes a configured env file when reusing an existing checkout', async () => {
+    const workspace = await tempWorkspace('symphony-ensure-github-env-skip-')
+    const envFile = path.join(await tempWorkspace('symphony-ensure-github-env-source-'), 'repo.env')
+    await mkdir(path.join(workspace, '.git'))
+    await writeFile(path.join(workspace, '.env.local'), 'APP_SECRET=stale\n', 'utf8')
+    await writeFile(envFile, 'APP_SECRET=fresh\n', 'utf8')
+    const { deps, calls } = fakeDeps()
+
+    await expect(
+      ensureGithubWorkspace({ repo: 'owner/repo', workspace, envFile }, deps),
+    ).resolves.toMatchObject({
+      action: 'skipped',
+    })
+
+    await expect(readFile(path.join(workspace, '.env.local'), 'utf8')).resolves.toBe('APP_SECRET=fresh\n')
+    expect(calls.commands).toEqual([])
+    expect(calls.stdout).toEqual([
+      'Injected workspace env file: .env.local',
+      `Workspace already contains a git checkout: ${path.resolve(workspace)}`,
+    ])
+  })
+
+  it('rejects env injection targets outside the workspace before cloning', async () => {
+    const workspace = await tempWorkspace('symphony-ensure-github-env-target-')
+    const envFile = path.join(await tempWorkspace('symphony-ensure-github-env-source-'), 'repo.env')
+    await writeFile(envFile, 'APP_SECRET=local-only\n', 'utf8')
+    const { deps, calls } = fakeDeps()
+
+    await expect(
+      ensureGithubWorkspace({ repo: 'owner/repo', workspace, envFile, envTarget: '../.env' }, deps),
+    ).rejects.toThrow('Env target must stay inside the workspace')
+    expect(calls.commands).toEqual([])
   })
 
   it('refuses to clone into a non-empty non-git workspace', async () => {

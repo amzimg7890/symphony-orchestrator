@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdir, readdir, stat } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { githubCommandParts } from './githubTracker'
@@ -40,6 +40,8 @@ export type ParsedWorkspaceEnsureGithubArgs =
       repo: string
       workspace: string
       ghCommand: string
+      envFile: string | null
+      envTarget: string
     }
   | {
       ok: false
@@ -48,10 +50,11 @@ export type ParsedWorkspaceEnsureGithubArgs =
 
 export function workspaceEnsureGithubUsage(): string {
   return [
-    'Usage: npm run workspace:ensure-github -- [--repo OWNER/REPO] [--workspace PATH] [--gh-command COMMAND]',
+    'Usage: npm run workspace:ensure-github -- [--repo OWNER/REPO] [--workspace PATH] [--gh-command COMMAND] [--env-file PATH] [--env-target PATH]',
     '',
     'Ensures the current Symphony issue workspace contains a GitHub repository checkout.',
     'Defaults: --repo $GITHUB_REPOSITORY, --workspace $SYMPHONY_WORKSPACE_PATH or $INIT_CWD or cwd, --gh-command gh.',
+    'Optional env injection: --env-file $SYMPHONY_WORKSPACE_ENV_FILE, --env-target $SYMPHONY_WORKSPACE_ENV_TARGET or .env.local.',
   ].join('\n')
 }
 
@@ -62,14 +65,30 @@ export function parseWorkspaceEnsureGithubArgs(
   let repo = env.GITHUB_REPOSITORY ?? ''
   let workspace = env.SYMPHONY_WORKSPACE_PATH ?? env.INIT_CWD ?? process.cwd()
   let ghCommand = env.SYMPHONY_GH_COMMAND ?? 'gh'
+  let envFile = env.SYMPHONY_WORKSPACE_ENV_FILE ?? env.SYMPHONY_GITHUB_WORKSPACE_ENV_FILE ?? ''
+  let envTarget = env.SYMPHONY_WORKSPACE_ENV_TARGET ?? env.SYMPHONY_GITHUB_WORKSPACE_ENV_TARGET ?? '.env.local'
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
     if (arg === '--help' || arg === '-h') {
-      return { ok: true, help: true, repo, workspace, ghCommand }
+      return {
+        ok: true,
+        help: true,
+        repo,
+        workspace,
+        ghCommand,
+        envFile: envFile.trim() || null,
+        envTarget: envTarget.trim() || '.env.local',
+      }
     }
 
-    if (arg === '--repo' || arg === '--workspace' || arg === '--gh-command') {
+    if (
+      arg === '--repo' ||
+      arg === '--workspace' ||
+      arg === '--gh-command' ||
+      arg === '--env-file' ||
+      arg === '--env-target'
+    ) {
       const value = args[index + 1]
       if (!value) {
         return { ok: false, error: `Missing value for ${arg}` }
@@ -79,8 +98,12 @@ export function parseWorkspaceEnsureGithubArgs(
         repo = value
       } else if (arg === '--workspace') {
         workspace = value
-      } else {
+      } else if (arg === '--gh-command') {
         ghCommand = value
+      } else if (arg === '--env-file') {
+        envFile = value
+      } else {
+        envTarget = value
       }
       index += 1
       continue
@@ -98,6 +121,16 @@ export function parseWorkspaceEnsureGithubArgs(
 
     if (arg.startsWith('--gh-command=')) {
       ghCommand = arg.slice('--gh-command='.length)
+      continue
+    }
+
+    if (arg.startsWith('--env-file=')) {
+      envFile = arg.slice('--env-file='.length)
+      continue
+    }
+
+    if (arg.startsWith('--env-target=')) {
+      envTarget = arg.slice('--env-target='.length)
       continue
     }
 
@@ -120,12 +153,18 @@ export function parseWorkspaceEnsureGithubArgs(
     return { ok: false, error: 'GitHub command must not be blank' }
   }
 
+  if (envTarget.trim() === '') {
+    return { ok: false, error: 'Env target must not be blank' }
+  }
+
   return {
     ok: true,
     help: false,
     repo: repo.trim(),
     workspace,
     ghCommand: ghCommand.trim(),
+    envFile: envFile.trim() || null,
+    envTarget: envTarget.trim(),
   }
 }
 
@@ -151,6 +190,8 @@ export async function runWorkspaceEnsureGithub(
         repo: parsed.repo,
         workspace: parsed.workspace,
         ghCommand: parsed.ghCommand,
+        envFile: parsed.envFile,
+        envTarget: parsed.envTarget,
       },
       deps,
     )
@@ -162,15 +203,19 @@ export async function runWorkspaceEnsureGithub(
 }
 
 export async function ensureGithubWorkspace(
-  options: { repo: string; workspace: string; ghCommand?: string },
+  options: { repo: string; workspace: string; ghCommand?: string; envFile?: string | null; envTarget?: string },
   deps: WorkspaceEnsureGithubDeps = createRuntimeWorkspaceEnsureGithubDeps(),
 ): Promise<WorkspaceEnsureGithubResult> {
   const repo = options.repo.trim()
   const workspace = path.resolve(options.workspace)
   const ghCommand = options.ghCommand?.trim() || 'gh'
+  const envFile = options.envFile?.trim() || null
+  const envTarget = options.envTarget?.trim() || '.env.local'
   await mkdir(workspace, { recursive: true })
+  const envInjection = await prepareWorkspaceEnvInjection({ workspace, envFile, envTarget })
 
   if (await directoryExists(path.join(workspace, '.git'))) {
+    await injectWorkspaceEnvFile(envInjection, workspace, deps)
     deps.stdout(`Workspace already contains a git checkout: ${workspace}`)
     return {
       workspace,
@@ -208,6 +253,7 @@ export async function ensureGithubWorkspace(
     throw new Error(`GitHub clone completed but ${workspace} does not contain a .git directory`)
   }
 
+  await injectWorkspaceEnvFile(envInjection, workspace, deps)
   deps.stdout(`Cloned ${repo} into ${workspace}`)
   return {
     workspace,
@@ -244,6 +290,58 @@ async function runCommand(
       output: `${execError.stdout ?? ''}${execError.stderr ?? ''}`,
     }
   }
+}
+
+type WorkspaceEnvInjection = {
+  source: string
+  target: string
+} | null
+
+async function prepareWorkspaceEnvInjection(options: {
+  workspace: string
+  envFile: string | null
+  envTarget: string
+}): Promise<WorkspaceEnvInjection> {
+  if (!options.envFile) {
+    return null
+  }
+
+  const source = path.resolve(options.envFile)
+  const target = resolveWorkspaceTarget(options.workspace, options.envTarget)
+  const sourceStat = await stat(source)
+  if (!sourceStat.isFile()) {
+    throw new Error(`Workspace env source must be a file: ${source}`)
+  }
+
+  return { source, target }
+}
+
+async function injectWorkspaceEnvFile(
+  envInjection: WorkspaceEnvInjection,
+  workspace: string,
+  deps: WorkspaceEnsureGithubDeps,
+): Promise<void> {
+  if (!envInjection) {
+    return
+  }
+
+  await mkdir(path.dirname(envInjection.target), { recursive: true })
+  await copyFile(envInjection.source, envInjection.target)
+  deps.stdout(`Injected workspace env file: ${path.relative(workspace, envInjection.target)}`)
+}
+
+function resolveWorkspaceTarget(workspace: string, envTarget: string): string {
+  if (path.isAbsolute(envTarget)) {
+    throw new Error('Env target must be relative to the workspace')
+  }
+
+  const target = path.resolve(workspace, envTarget)
+  const relative = path.relative(workspace, target)
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('Env target must stay inside the workspace')
+  }
+
+  return target
 }
 
 async function directoryExists(directory: string): Promise<boolean> {

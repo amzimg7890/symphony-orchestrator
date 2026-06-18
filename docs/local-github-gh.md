@@ -49,6 +49,8 @@ gh auth login
 GITHUB_REPOSITORY=owner/repo
 GITHUB_ASSIGNEE=your-github-login
 SYMPHONY_REQUIRED_LABELS=codex
+SYMPHONY_WORKSPACE_ENV_FILE=
+SYMPHONY_WORKSPACE_ENV_TARGET=.env.local
 ```
 
 当前项目的 GitHub workflow 默认读取：
@@ -56,10 +58,30 @@ SYMPHONY_REQUIRED_LABELS=codex
 - `GITHUB_REPOSITORY`: 目标仓库，格式为 `owner/repo`
 - `GITHUB_ASSIGNEE`: 只处理分配给这个 GitHub 用户的 issue
 - `SYMPHONY_REQUIRED_LABELS`: 通常保持 `codex`
+- `SYMPHONY_WORKSPACE_ENV_FILE`: 可选，本机私密 env 模板文件，clone 后复制到每个 issue workspace
+- `SYMPHONY_WORKSPACE_ENV_TARGET`: 可选，复制到 workspace 内的目标路径，默认 `.env.local`
 
 `WORKFLOW.github.md` 里的 `tracker.repo` 指向 `$GITHUB_REPOSITORY`，
 `tracker.assignee` 指向 `$GITHUB_ASSIGNEE`。如果 `GITHUB_ASSIGNEE` 留空，
 就不会按 assignee 限制候选 issue。
+
+目标仓库通常不会提交 `.env`。这种情况下，不要把 secret 写进 issue、
+workflow 或仓库代码；在 Symphony 本机准备一个不进 Git 的 env 文件：
+
+```text
+C:\Users\you\Documents\symphony\secrets\owner-repo.env
+```
+
+然后在 Symphony 的 `.env` 里指向它：
+
+```dotenv
+SYMPHONY_WORKSPACE_ENV_FILE=C:\Users\you\Documents\symphony\secrets\owner-repo.env
+SYMPHONY_WORKSPACE_ENV_TARGET=.env.local
+```
+
+每次 worker 准备 `symphony_workspaces/GH-<number>` 时，
+`workspace:ensure-github` 会在 clone 或复用 checkout 后把这个文件复制成
+workspace 内的 `.env.local`。日志只记录目标文件名，不记录 env 内容。
 
 ## Workflow Settings
 
@@ -336,4 +358,3 @@ gh issue view <number> --repo owner/repo --json number,state,comments,url
 # Inspect local issue workspace
 git -C symphony_workspaces/GH-<number> status --short
 ```
-

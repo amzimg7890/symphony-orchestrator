@@ -433,6 +433,10 @@ implementation.
   GitHub Actions worker runs.
 - `npm run workspace:ensure-github` prepares a local GitHub issue workspace by
   cloning the configured repository only when the workspace is empty.
+- `npm run workspace:ensure-github` can also copy a local secret template from
+  `SYMPHONY_WORKSPACE_ENV_FILE` into each issue workspace as
+  `SYMPHONY_WORKSPACE_ENV_TARGET` or `.env.local`, without logging secret
+  contents or requiring target repositories to commit `.env` files.
 - `npm run workflow:smoke-live-readonly` starts the orchestrator against the
   generated live workflow for one guarded read-only Linear poll.
 - `npm run smoke:ssh-worker-preflight` is available for read-only/no-model SSH

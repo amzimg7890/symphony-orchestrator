@@ -5,6 +5,7 @@ node_modules
 dist
 coverage
 log
+secrets/
 *.log
 *.local
 .env
