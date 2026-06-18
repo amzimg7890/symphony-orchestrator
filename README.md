@@ -352,3 +352,10 @@ as `/remote/workspaces` stay POSIX even when the dashboard runs on Windows.
 ## Production Notes
 
 Run `codex app-server generate-json-schema --experimental --out .tmp/codex-schema` when upgrading Codex CLI so the local adapter can be checked against the installed app-server schema. The simulated runner is intentionally safe for local development; the Codex runner is intended for trusted repositories and should be exercised with your Codex/Linear authentication before unattended use.
+
+## License and Attribution
+
+This project is a TypeScript/TanStack Start reimplementation of
+[OpenAI Symphony](https://github.com/openai/symphony), which is licensed under
+the Apache License, Version 2.0. See `LICENSE` and `NOTICE` for license terms
+and upstream attribution.
