@@ -29,6 +29,8 @@
     "workflow:live": "tsx scripts/prepare-live-workflow.ts",
     "workflow:check-live": "tsx scripts/check-live-workflow.ts",
     "workflow:prepare-github-issue": "tsx scripts/prepare-github-issue.ts",
+    "workflow:hermes-create-issue": "tsx scripts/create-hermes-issue.ts",
+    "hermes:router": "tsx scripts/hermes-router.ts",
     "workflow:check-github": "tsx scripts/check-github-workflow.ts",
     "workflow:smoke-live-readonly": "tsx scripts/smoke-live-runtime-readonly.ts",
     "pr-body:check": "tsx scripts/pr-body-check.ts",
